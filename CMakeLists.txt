@@ -9,7 +9,8 @@ project(cnr_class_loader CXX)
 #  add_compile_options(-Wall -Wextra -Wpedantic)
 #endif()
 
-find_package(Boost REQUIRED COMPONENTS thread system filesystem)
+# Boost.System is header-only since 1.69 and has no CMake config since 1.89
+find_package(Boost REQUIRED COMPONENTS thread filesystem)
 
 find_package(Poco REQUIRED COMPONENTS Foundation)
 
@@ -36,7 +37,6 @@ target_include_directories(${PROJECT_NAME} PUBLIC
 target_link_libraries(${PROJECT_NAME}
   PUBLIC
   Boost::thread
-  Boost::system
   Boost::filesystem
   Poco::Foundation
   )
