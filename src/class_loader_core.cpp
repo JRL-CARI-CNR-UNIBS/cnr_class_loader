@@ -36,6 +36,7 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -84,7 +85,19 @@ MetaObjectVector & getMetaObjectGraveyard()
 
 LibraryVector & getLoadedLibraryVector()
 {
-  static LibraryVector instance;
+  // The libraries that are never unloaded (e.g. once a non-pure plugin library has been opened, see
+  // unloadLibrary()) keep their Poco::SharedLibrary handle here until the end of the program: release the handles
+  // at exit. ~Poco::SharedLibrary() does not unload the library, so this does not change what stays in memory.
+  struct OwningLibraryVector : public LibraryVector
+  {
+    ~OwningLibraryVector()
+    {
+      for (LibraryPair & library : *this) {
+        delete library.second;
+      }
+    }
+  };
+  static OwningLibraryVector instance;
   return instance;
 }
 
@@ -446,33 +459,43 @@ void loadLibrary(const std::string & library_path, ClassLoader * loader)
     return;
   }
 
-  // get absolute library path
-  std::string ld_library_path = std::getenv("LD_LIBRARY_PATH");
-  std::vector<std::string> library_prefixes;
-  std::string delimiter = ":";
+  // Candidate files: an absolute path is loaded as it is; a library name (or a relative path) is looked for in the
+  // folders of LD_LIBRARY_PATH, then in /usr/lib and /usr/local/lib.
+  std::vector<std::string> candidates;
+  if (!library_path.empty() && library_path.front() == '/') {
+    candidates.push_back(library_path);
+  } else {
+    std::vector<std::string> library_prefixes;
+    // std::getenv() returns nullptr when the variable is not defined
+    if (const char * env = std::getenv("LD_LIBRARY_PATH")) {
+      const std::string ld_library_path(env);
+      size_t start = 0;
+      while (start <= ld_library_path.size()) {
+        size_t end = ld_library_path.find(':', start);
+        if (end == std::string::npos) {
+          end = ld_library_path.size();
+        }
+        if (end > start) {  // skip empty entries, which would give "/<library_path>"
+          library_prefixes.push_back(ld_library_path.substr(start, end - start));
+        }
+        start = end + 1;
+      }
+    }
+    library_prefixes.push_back("/usr/lib");
+    library_prefixes.push_back("/usr/local/lib");
 
-  size_t pos = 0;
-  std::string lib_path;
-  while ((pos = ld_library_path.find(delimiter)) != std::string::npos)
-  {
-      lib_path = ld_library_path.substr(0, pos);
-      library_prefixes.push_back(lib_path);
-      ld_library_path.erase(0, pos + delimiter.length());
+    for (const std::string & lp : library_prefixes) {
+      candidates.push_back(lp + "/" + library_path);
+    }
   }
-  library_prefixes.push_back(ld_library_path);
-
-  library_prefixes.push_back("/usr/lib");
-  library_prefixes.push_back("/usr/local/lib");
-
 
   Poco::SharedLibrary * library_handle = nullptr;
 
   bool found=false;
 
   std::string error_message;
-  for (const std::string& lp: library_prefixes)
+  for (const std::string & abs_path : candidates)
   {
-    std::string abs_path=lp+"/"+library_path;
 
     try {
       setCurrentlyActiveClassLoader(loader);
